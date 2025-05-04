@@ -177,7 +177,7 @@ class UNet(nn.Module):
 
 
 class DiffusionModel(nn.Module):
-    def __init__(self, device, args):
+    def __init__(self, device, ckpt_path, args):
         super(DiffusionModel, self).__init__()
         self.device = device
 
@@ -195,8 +195,8 @@ class DiffusionModel(nn.Module):
         self.sq_a_cumprod = torch.sqrt(a_cumprod).to(device)
         self.sq_co_a_cumprod = torch.sqrt(1.0 - a_cumprod).to(device)
 
-        if args.ckpt_path:
-            self.model.load_state_dict(torch.load(args.ckpt_path))
+        if ckpt_path:
+            self.model.load_state_dict(torch.load(ckpt_path))
 
     def q_sample(self, x0, t, noise=None):
         if noise is None:
@@ -231,8 +231,8 @@ class DiffusionModel(nn.Module):
 
     @torch.no_grad()
     def sample(self, shape, class_label):
-        b = shape[0]
-        x = torch.randn(shape).to(next(self.model.parameters()).device)
+        b = class_label.shape[0]
+        x = torch.randn((b, *shape)).to(next(self.model.parameters()).device)
         for i in reversed(range(self.time_steps)):
             t = torch.full((b, ), i, device=x.device, dtype=torch.long)
             x = self.p_sample(x, t, class_label)
