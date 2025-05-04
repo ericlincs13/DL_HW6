@@ -8,7 +8,8 @@ from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 from evaluator import evaluation_model
 import wandb
-from torchvision import transforms
+import torch.nn.functional as F
+import math
 
 
 def train(args, device):
@@ -18,14 +19,19 @@ def train(args, device):
         ckpt_path = None
 
     model = DiffusionModel(device, ckpt_path, args)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=5000,  # warmup 多少步
-        num_training_steps=200000  # 總訓練步數
-    )
+    train_dataset = TrainingDataset(args.dataset_dir)
+    test_dataset = TestingDataset(args.dataset_dir, filename=args.test_file)
 
-    transform = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    for pg in optimizer.param_groups:
+        pg['initial_lr'] = pg['lr']
+    total_steps = math.ceil(len(train_dataset) / args.batch_size) * args.epochs
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,  #
+        num_warmup_steps=math.ceil(total_steps * 0.05),
+        num_training_steps=total_steps,
+        last_epoch=args.epoch_start)
+
     evaluator = evaluation_model()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -34,7 +40,7 @@ def train(args, device):
 
     for epoch in range(args.epoch_start, args.epoch_start + args.epochs):
         model.train()
-        dataloader = DataLoader(TrainingDataset(args.dataset_dir),
+        dataloader = DataLoader(train_dataset,
                                 batch_size=args.batch_size,
                                 shuffle=True)
         total_loss = 0
@@ -63,7 +69,7 @@ def train(args, device):
 
         avg_loss = total_loss / len(dataloader)
 
-        print(f"[ Train ] Epoch {epoch} loss: {avg_loss}")
+        print(f"[ Train ] Epoch {epoch} loss: {avg_loss:.6f}")
 
         wandb.log({
             "loss": avg_loss,
@@ -71,34 +77,41 @@ def train(args, device):
             "lr": optimizer.param_groups[0]["lr"]
         })
 
-        if epoch % args.save_interval == 0:
-            torch.save(model.state_dict(),
-                       f"{args.save_dir}/model_{epoch}.pth")
-
-        if epoch % 10 != 0:
+        if epoch % args.save_interval != 0:
             continue
 
+        torch.save(model.state_dict(), f"{args.save_dir}/model_{epoch}.pth")
+
         model.eval()
-        dataloader = DataLoader(  #
-            TestingDataset(args.dataset_dir, filename=args.test_file),
-            batch_size=args.batch_size)
+        dataloader = DataLoader(test_dataset, batch_size=args.batch_size)
         total_acc = 0
+        noise_mean_loss = 0
+        noise_var_loss = 0
 
         for label in tqdm(dataloader,
                           mininterval=2,
                           desc=f"Eval Epoch {epoch}"):
             label = label.to(device)
-            image = model.sample((3, 64, 64), label)
-            image = transform(image)
+            image, noise_mean, noise_var = model.sample((3, 64, 64), label)
             acc = evaluator.eval(image, label)
+
             total_acc += acc
+            noise_mean_loss += F.mse_loss(noise_mean,
+                                          torch.zeros_like(noise_mean))
+            noise_var_loss += F.mse_loss(noise_var, torch.ones_like(noise_var))
 
         avg_acc = total_acc / len(dataloader)
-        print(f"[ Eval ] Epoch {epoch} acc: {avg_acc}")
+        noise_mean_loss = noise_mean_loss / len(dataloader)
+        noise_var_loss = noise_var_loss / len(dataloader)
+        print(
+            f"[ Eval ] Epoch {epoch} acc: {avg_acc:.6f}, noise_mean_loss: {noise_mean_loss:.6f}, noise_var_loss: {noise_var_loss:.6f}"
+        )
 
         wandb.log({
             "acc": avg_acc,
             "epoch": epoch,
+            "noise_mean": noise_mean_loss,
+            "noise_var": noise_var_loss
         })
 
         if avg_acc > best_acc:
@@ -114,7 +127,7 @@ if __name__ == "__main__":
     parser.add_argument("--time-steps", type=int, default=1000)
 
     parser.add_argument("--epoch-start", type=int, default=0)
-    parser.add_argument("--epochs", type=int, default=300)
+    parser.add_argument("--epochs", type=int, default=500)
 
     parser.add_argument("--dataset-dir", type=str, default="dataset")
     parser.add_argument("--test-file", type=str, default="test.json")

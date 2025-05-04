@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
+from torch.utils.data import DataLoader
+from dataloder import TrainingDataset
+from tqdm import tqdm
 '''===============================================================
 1. Title:     
 
@@ -66,3 +69,18 @@ class evaluation_model():
             out = self.resnet18(images)
             acc = self.compute_acc(out.cpu(), labels.cpu())
             return acc
+
+
+if __name__ == "__main__":
+    evaluator = evaluation_model()
+    dataloader = DataLoader(TrainingDataset("dataset"),
+                            batch_size=100,
+                            shuffle=True)
+
+    total_acc = 0
+    for image, label in tqdm(dataloader, mininterval=2):
+        acc = evaluator.eval(image.cuda(), label.cuda())
+        total_acc += acc
+
+    avg_acc = total_acc / len(dataloader)
+    print(f"Average accuracy: {avg_acc}")

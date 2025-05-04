@@ -1,6 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import transforms
+
+
+def init_weights(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        nn.init.kaiming_normal_(m.weight)
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
 
 
 class ResidualBlock(nn.Module):
@@ -133,7 +141,10 @@ class UNetDecoder(nn.Module):
             self.blocks.append(  #
                 ResidualBlock(channels[i] // 2, channels[i] // 2, emb_dim))
 
-        self.final = nn.Conv2d(base_channels // 2, out_channels, kernel_size=1)
+        self.final = nn.Sequential(
+            nn.Conv2d(base_channels // 2, out_channels, kernel_size=1),
+            nn.Tanh(),
+        )
 
     def forward(self, x, skip, emb):
         for i in range(len(self.ups)):
@@ -187,8 +198,11 @@ class DiffusionModel(nn.Module):
                           time_emb_dim=128,
                           class_num=24).to(device)
 
+        self.sample_transform = transforms.Normalize(  #
+            (0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+
         self.time_steps = args.time_steps
-        self.betas = torch.linspace(0.0001, 0.02, self.time_steps).to(device)
+        self.betas = torch.linspace(0.0001, 0.008, self.time_steps).to(device)
         self.alphas = 1.0 - self.betas
 
         a_cumprod = torch.cumprod(self.alphas, dim=0)
@@ -196,7 +210,9 @@ class DiffusionModel(nn.Module):
         self.sq_co_a_cumprod = torch.sqrt(1.0 - a_cumprod).to(device)
 
         if ckpt_path:
-            self.model.load_state_dict(torch.load(ckpt_path))
+            self.load_state_dict(torch.load(ckpt_path))
+        else:
+            self.apply(init_weights)
 
     def q_sample(self, x0, t, noise=None):
         if noise is None:
@@ -211,29 +227,40 @@ class DiffusionModel(nn.Module):
         noise = torch.randn_like(x0).to(self.device)
         xt = self.q_sample(x0, t, noise)
         predicted_noise = self.model(xt, t, class_label)
-        loss = F.l1_loss(noise, predicted_noise)
+        mse = F.mse_loss(noise, predicted_noise, reduction='none')
+        mse = mse.view(mse.size(0), -1).mean(dim=1)
+        a_cumprod_t = (self.sq_a_cumprod[t]**2)
+        weight = (self.betas[t]**2) / (self.alphas[t] * (1.0 - a_cumprod_t))
+        loss = (weight * mse).mean()
         return loss
 
     @torch.no_grad()
     def p_sample(self, x, t, class_label):
         b = self.betas[t].view(-1, 1, 1, 1)
-        sq_a = self.sq_a_cumprod[t].view(-1, 1, 1, 1)
+        sq_a = torch.sqrt(self.alphas[t]).view(-1, 1, 1, 1)
         sq_co_a = self.sq_co_a_cumprod[t].view(-1, 1, 1, 1)
 
-        predicted_noise = self.model(x, t, class_label)
-        mean = (1 / sq_a) * (x - b * predicted_noise / sq_co_a)
+        predicted = self.model(x, t, class_label)
+        mean = (1 / (sq_a + 1e-8)) * (x - b * predicted / (sq_co_a + 1e-8))
 
         if t[0] == 0:
-            return mean
+            return mean, predicted
         else:
             noise = torch.randn_like(x)
-            return mean + torch.sqrt(b) * noise
+            result = mean + torch.sqrt(b) * noise
+            return result, predicted
 
     @torch.no_grad()
     def sample(self, shape, class_label):
         b = class_label.shape[0]
-        x = torch.randn((b, *shape)).to(next(self.model.parameters()).device)
+        x = torch.randn((b, *shape)).to(self.device)
+        total_noise_mean = 0
+        total_noise_var = 0
         for i in reversed(range(self.time_steps)):
             t = torch.full((b, ), i, device=x.device, dtype=torch.long)
-            x = self.p_sample(x, t, class_label)
-        return x
+            x, noise = self.p_sample(x, t, class_label)
+            total_noise_mean = torch.mean(noise, dim=0)
+            total_noise_var += torch.var(total_noise_mean)
+
+        x = self.sample_transform(x)
+        return x, total_noise_mean / self.time_steps, total_noise_var / self.time_steps
