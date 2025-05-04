@@ -8,6 +8,7 @@ from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 from evaluator import evaluation_model
 import wandb
+from torchvision import transforms
 
 
 def train(args, device):
@@ -24,6 +25,7 @@ def train(args, device):
         num_training_steps=200000  # 總訓練步數
     )
 
+    transform = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     evaluator = evaluation_model()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -87,6 +89,7 @@ def train(args, device):
                           desc=f"Eval Epoch {epoch}"):
             label = label.to(device)
             image = model.sample((3, 64, 64), label)
+            image = transform(image)
             acc = evaluator.eval(image, label)
             total_acc += acc
 
