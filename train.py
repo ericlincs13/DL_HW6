@@ -39,7 +39,7 @@ def train(args, device):
 
         for image, label in tqdm(dataloader,
                                  mininterval=2,
-                                 desc=f"Epoch {epoch}"):
+                                 desc=f"Train Epoch {epoch}"):
 
             image = image.to(device)
             label = label.to(device)
@@ -66,6 +66,7 @@ def train(args, device):
         wandb.log({
             "loss": avg_loss,
             "epoch": epoch,
+            "lr": optimizer.param_groups[0]["lr"]
         })
 
         if epoch % args.save_interval == 0:
@@ -81,7 +82,9 @@ def train(args, device):
             batch_size=args.batch_size)
         total_acc = 0
 
-        for label in tqdm(dataloader, mininterval=2, desc=f"Epoch {epoch}"):
+        for label in tqdm(dataloader,
+                          mininterval=2,
+                          desc=f"Eval Epoch {epoch}"):
             label = label.to(device)
             image = model.sample((3, 64, 64), label)
             acc = evaluator.eval(image, label)
