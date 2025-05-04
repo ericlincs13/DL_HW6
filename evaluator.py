@@ -34,7 +34,6 @@ transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 
 
 class evaluation_model():
-
     def __init__(self):
         #modify the path to your own path
         checkpoint = torch.load('./evalmodel.pth')
