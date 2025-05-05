@@ -2,7 +2,7 @@ import os
 import torch
 from torchvision.utils import save_image
 import argparse
-from models.diffusion import DiffusionModel
+from models.diffusion import Diffusion
 from torch.utils.data import DataLoader
 from dataloder import TestingDataset
 from tqdm import tqdm
@@ -21,19 +21,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DiffusionModel(device, args.ckpt_path, args)
+    model = Diffusion(device, args)
     evaluator = evaluation_model()
     dataset = TestingDataset(args.dataset_dir, filename=args.test_file)
     dataloader = DataLoader(dataset, batch_size=args.batch_size)
 
     os.makedirs(args.save_dir, exist_ok=True)
 
-    model.eval()
     total_acc = 0
     idx = 0
     for label in tqdm(dataloader, mininterval=2, desc=f"Eval"):
         label = label.to(device)
-        image, _, _ = model.sample((3, 64, 64), label)
+        image = model.sample(label)
         acc = evaluator.eval(image, label)
         total_acc += acc
 
