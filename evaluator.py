@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 from torch.utils.data import DataLoader
-from dataloder import TrainingDataset
+from dataset import TrainingDataset
 from tqdm import tqdm
 '''===============================================================
 1. Title:     

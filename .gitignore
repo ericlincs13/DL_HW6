@@ -1,4 +1,4 @@
-dataset/
+data/
 __pycache__/
 *.pth
 *.pt
@@ -7,3 +7,8 @@ wandb/
 *.png
 *.jpg
 *.jpeg
+*.zip
+*.tar
+*.gz
+*.bz2
+*.rar

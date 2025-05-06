@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from diffusers import DDPMScheduler  # type: ignore
 from models.Unet import ClassConditionedUnet
-from dataloder import TrainingDataset, TestingDataset
+from dataset import TrainingDataset, TestingDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from evaluator import evaluation_model
@@ -19,21 +19,25 @@ def init_weights(m):
 
 
 class Diffusion():
-    def __init__(self, device, args):
+    def __init__(self, device, args, mode="train"):
         self.device = device
-        self.batch_size = args.batch_size
+        self.mode = mode
 
+        assert self.mode in ["train", "test"]
+
+        if self.mode == "train":
+            self._train_init(args)
+        else:
+            self._test_init(args)
+
+    def _train_init(self, args):
+        self.batch_size = args.batch_size
         self.uncond_prob = args.uncond_prob
         self.guidance_scale = args.guidance_scale
         self.time_steps = args.time_steps
         self.save_dir = args.save_dir
 
         self.model = ClassConditionedUnet().to(self.device)
-        if args.epoch_start > 0:
-            self.load_ckpt(f"{args.save_dir}/model_{args.epoch_start}.pth")
-        else:
-            self.model.apply(init_weights)
-
         self.evaluator = evaluation_model()
 
         train_dataset = TrainingDataset(args.dataset_dir)
@@ -60,14 +64,43 @@ class Diffusion():
 
         total_steps = math.ceil(
             len(train_dataset) / args.batch_size) * args.epochs
-        if args.use_scheduler:
+
+        if args.use_scheduler == 'warmup':
             self.scheduler = get_cosine_schedule_with_warmup(
                 self.optimizer,  #
                 num_warmup_steps=math.ceil(total_steps * 0.05),
                 num_training_steps=total_steps,
                 last_epoch=args.epoch_start)
-        else:
+        elif args.use_scheduler == 'cosine':
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=total_steps, eta_min=args.lr * 0.01)
+        elif args.use_scheduler == 'none':
             self.scheduler = None
+        else:
+            raise ValueError(f"Invalid scheduler: {args.use_scheduler}")
+
+        if args.epoch_start > 0:
+            ckpt = torch.load(f"{args.save_dir}/model_{args.epoch_start}.pth")
+            self.model.load_state_dict(ckpt["model"])
+            self.optimizer.load_state_dict(ckpt["optimizer"])
+            if self.scheduler is not None:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+        else:
+            self.model.apply(init_weights)
+
+    def _test_init(self, args):
+        self.guidance_scale = args.guidance_scale
+        self.time_steps = args.time_steps
+
+        self.model = ClassConditionedUnet().to(self.device)
+        self.evaluator = evaluation_model()
+
+        self.noise_scheduler = DDPMScheduler(
+            num_train_timesteps=1000,  #
+            beta_schedule="squaredcos_cap_v2")
+
+        ckpt = torch.load(args.ckpt_path)
+        self.model.load_state_dict(ckpt["model"])
 
     def train(self, epoch):
         self.model.train()
@@ -138,7 +171,9 @@ class Diffusion():
         batch_size = label.shape[0]
         image = torch.randn((batch_size, 3, 64, 64)).to(self.device)
 
-        for t in self.noise_scheduler.timesteps:
+        denoising = []
+
+        for i, t in enumerate(self.noise_scheduler.timesteps):
             # classifier-free guidance sampling: combine unconditional and conditional predictions
             uncond_label = torch.zeros_like(label)
             noise_uncond = self.model(image, t, uncond_label)
@@ -148,7 +183,15 @@ class Diffusion():
             image = self.noise_scheduler.step(
                 noise, t, image).prev_sample  # type: ignore
 
-        return image
+            if self.mode == "test" and i % (self.time_steps // 10) == 0:
+                denoising.append(image)
+
+        if self.mode == "test":
+            denoising.append(image)
+            denoising = torch.stack(denoising, dim=0)
+            return image, denoising
+        else:
+            return image
 
     def save_ckpt(self, filename):
         torch.save(
@@ -161,9 +204,10 @@ class Diffusion():
                 self.scheduler.state_dict()
                 if self.scheduler is not None else None,
             }, f"{self.save_dir}/{filename}.pth")
+        print(f"Saved model {filename}.pth")
 
     def load_ckpt(self, filename):
-        ckpt = torch.load(f"{self.save_dir}/{filename}.pth")
+        ckpt = torch.load(filename)
         self.model.load_state_dict(ckpt["model"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
         if self.scheduler is not None:

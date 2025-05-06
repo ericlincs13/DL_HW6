@@ -6,7 +6,7 @@ import wandb
 
 
 def train(args, device):
-    diffusion = Diffusion(device, args)
+    diffusion = Diffusion(device, args, mode="train")
 
     os.makedirs(args.save_dir, exist_ok=True)
     best_acc = 0
@@ -28,6 +28,8 @@ def train(args, device):
             best_acc = avg_acc
             diffusion.save_ckpt("model_best")
 
+    diffusion.save_ckpt("model_final")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -40,13 +42,16 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=500)
     parser.add_argument("--num-workers", type=int, default=20)
 
-    parser.add_argument("--dataset-dir", type=str, default="dataset")
+    parser.add_argument("--dataset-dir", type=str, default="data")
     parser.add_argument("--test-file", type=str, default="test.json")
 
     parser.add_argument("--save-dir", type=str, default="saved_models")
     parser.add_argument("--save-interval", type=int, default=10)
 
-    parser.add_argument("--use-scheduler", type=bool, default=False)
+    parser.add_argument("--use-scheduler",
+                        type=str,
+                        default='cosine',
+                        choices=['warmup', 'cosine', 'none'])
     parser.add_argument("--uncond-prob",
                         type=float,
                         default=0.1,
